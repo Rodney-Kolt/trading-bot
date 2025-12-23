@@ -21,7 +21,7 @@ input bool      SendWebhooks = true;   // Send signals to Python bot
 input bool      ExecuteOnMT5 = true;   // Execute trades on MT5 demo
 
 // Global Variables
-double fastEMA[], slowEMA, trendEMA[], rsi[];
+double fastEMA[], slowEMA[], trendEMA[], rsi[];  // Fixed: Added [] to slowEMA
 int fastEMAHandle, slowEMAHandle, trendEMAHandle, rsiHandle;
 datetime lastSignalTime = 0;
 bool inPosition = false;
