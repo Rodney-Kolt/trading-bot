@@ -15,10 +15,11 @@ class Config:
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
     # Exchange Settings
-    EXCHANGE = os.getenv('EXCHANGE', 'binance')
+    EXCHANGE = os.getenv('EXCHANGE', 'none')  # Set to 'none' for TradingView-only mode
     API_KEY = os.getenv('API_KEY', '')
     API_SECRET = os.getenv('API_SECRET', '')
     SANDBOX_MODE = os.getenv('SANDBOX_MODE', 'True').lower() == 'true'
+    TRADINGVIEW_ONLY = os.getenv('TRADINGVIEW_ONLY', 'True').lower() == 'true'
     
     # Account Settings
     ACCOUNT_BALANCE = float(os.getenv('ACCOUNT_BALANCE', 1000.0))  # USD

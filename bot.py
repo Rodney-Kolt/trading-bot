@@ -14,20 +14,25 @@ class TradingBot:
     def __init__(self):
         self.exchange = None
         self.exchange_connected = False
+        self.tradingview_only = Config.TRADINGVIEW_ONLY
         self.risk_manager = RiskManager()
-        self.positions = {}  # Track open positions
+        self.positions = {}  # Track simulated positions
         self.trade_history = []
         self.last_trade_time = {}  # Cooldown tracking
         self.running = True
+        self.paper_balance = Config.ACCOUNT_BALANCE  # Simulated balance
         
-        # Try to connect to exchange, but don't fail if it's blocked
-        try:
-            self.exchange = self._setup_exchange()
-            self.exchange_connected = True
-            logging.info("Trading Bot initialized with exchange connection")
-        except Exception as e:
-            logging.warning(f"Exchange connection failed (will retry on first trade): {str(e)}")
-            logging.info("Trading Bot initialized in webhook-only mode")
+        if self.tradingview_only:
+            logging.info("Trading Bot initialized in TradingView-only mode (no exchange needed)")
+        else:
+            # Try to connect to exchange, but don't fail if it's blocked
+            try:
+                self.exchange = self._setup_exchange()
+                self.exchange_connected = True
+                logging.info("Trading Bot initialized with exchange connection")
+            except Exception as e:
+                logging.warning(f"Exchange connection failed (will retry on first trade): {str(e)}")
+                logging.info("Trading Bot initialized in webhook-only mode")
     
     def _setup_exchange(self):
         """Initialize exchange connection"""
@@ -64,7 +69,7 @@ class TradingBot:
         Main signal processing pipeline
         1. Validate signal
         2. Check risk rules
-        3. Execute trade if approved
+        3. Execute trade (real or simulated)
         """
         try:
             action = signal_data['action'].upper()
@@ -72,14 +77,6 @@ class TradingBot:
             price = float(signal_data['price'])
             
             logging.info(f"Processing {action} signal for {symbol} at {price}")
-            
-            # Ensure exchange is connected
-            if not self.exchange_connected:
-                try:
-                    self.exchange = self._setup_exchange()
-                    self.exchange_connected = True
-                except Exception as e:
-                    return {"status": "error", "reason": f"Exchange connection failed: {str(e)}"}
             
             # Step 1: Signal validation
             if not self._validate_signal(signal_data):
@@ -93,13 +90,31 @@ class TradingBot:
             if not risk_check['allowed']:
                 return {"status": "rejected", "reason": risk_check['reason']}
             
-            # Step 3: Execute trade
-            if action == 'BUY':
-                result = self._execute_buy(symbol, price, risk_check['position_size'])
-            elif action == 'SELL':
-                result = self._execute_sell(symbol, price)
+            # Step 3: Execute trade (real or simulated)
+            if self.tradingview_only:
+                # Simulate the trade
+                if action == 'BUY':
+                    result = self._simulate_buy(symbol, price, risk_check['position_size'])
+                elif action == 'SELL':
+                    result = self._simulate_sell(symbol, price)
+                else:
+                    return {"status": "rejected", "reason": f"Invalid action: {action}"}
             else:
-                return {"status": "rejected", "reason": f"Invalid action: {action}"}
+                # Real exchange trading
+                # Ensure exchange is connected
+                if not self.exchange_connected:
+                    try:
+                        self.exchange = self._setup_exchange()
+                        self.exchange_connected = True
+                    except Exception as e:
+                        return {"status": "error", "reason": f"Exchange connection failed: {str(e)}"}
+                
+                if action == 'BUY':
+                    result = self._execute_buy(symbol, price, risk_check['position_size'])
+                elif action == 'SELL':
+                    result = self._execute_sell(symbol, price)
+                else:
+                    return {"status": "rejected", "reason": f"Invalid action: {action}"}
             
             # Log trade
             self._log_trade(signal_data, result)
@@ -153,7 +168,102 @@ class TradingBot:
         
         return True
     
-    def _execute_buy(self, symbol: str, price: float, position_size: float) -> Dict:
+    def _simulate_buy(self, symbol: str, price: float, position_size: float) -> Dict:
+        """Simulate BUY order for TradingView-only mode"""
+        try:
+            # Check if already in position
+            if symbol in self.positions:
+                logging.warning(f"Already in simulated position for {symbol}")
+                return {"status": "rejected", "reason": "Already in position"}
+            
+            # Calculate position value
+            position_value = position_size * price
+            
+            # Check if we have enough balance
+            if position_value > self.paper_balance:
+                logging.warning(f"Insufficient simulated balance: ${self.paper_balance:.2f}")
+                return {"status": "rejected", "reason": "Insufficient balance"}
+            
+            # Deduct from paper balance
+            self.paper_balance -= position_value
+            
+            # Store simulated position
+            self.positions[symbol] = {
+                'side': 'long',
+                'size': position_size,
+                'entry_price': price,
+                'timestamp': datetime.now(),
+                'order_id': f"SIM_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                'simulated': True
+            }
+            
+            # Set stop loss and take profit
+            self._set_stop_loss_take_profit(symbol, price)
+            
+            # Update cooldown
+            self.last_trade_time[symbol] = datetime.now()
+            
+            logging.info(f"SIMULATED BUY: {symbol} - Size: {position_size} - Price: ${price} - Value: ${position_value:.2f}")
+            
+            return {
+                "status": "executed",
+                "action": "BUY",
+                "symbol": symbol,
+                "size": position_size,
+                "price": price,
+                "order_id": self.positions[symbol]['order_id'],
+                "mode": "SIMULATED",
+                "remaining_balance": self.paper_balance
+            }
+            
+        except Exception as e:
+            logging.error(f"Simulated buy failed: {str(e)}")
+            return {"status": "error", "reason": str(e)}
+    
+    def _simulate_sell(self, symbol: str, price: float) -> Dict:
+        """Simulate SELL order for TradingView-only mode"""
+        try:
+            # Check if in position
+            if symbol not in self.positions:
+                logging.warning(f"No simulated position to sell for {symbol}")
+                return {"status": "rejected", "reason": "No position to sell"}
+            
+            position = self.positions[symbol]
+            
+            # Calculate P&L
+            entry_price = position['entry_price']
+            exit_price = price
+            position_value = position['size'] * exit_price
+            pnl = (exit_price - entry_price) * position['size']
+            pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+            
+            # Add proceeds to paper balance
+            self.paper_balance += position_value
+            
+            # Remove position
+            del self.positions[symbol]
+            
+            # Update cooldown
+            self.last_trade_time[symbol] = datetime.now()
+            
+            logging.info(f"SIMULATED SELL: {symbol} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%) - Balance: ${self.paper_balance:.2f}")
+            
+            return {
+                "status": "executed",
+                "action": "SELL",
+                "symbol": symbol,
+                "size": position['size'],
+                "price": price,
+                "pnl": pnl,
+                "pnl_percent": pnl_percent,
+                "order_id": f"SIM_SELL_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                "mode": "SIMULATED",
+                "new_balance": self.paper_balance
+            }
+            
+        except Exception as e:
+            logging.error(f"Simulated sell failed: {str(e)}")
+            return {"status": "error", "reason": str(e)}
         """Execute BUY order"""
         try:
             # Check if already in position
@@ -272,21 +382,29 @@ class TradingBot:
         try:
             status = {
                 'running': self.running,
+                'mode': 'TradingView-only (Simulated)' if self.tradingview_only else 'Live Trading',
                 'exchange_connected': self.exchange_connected,
                 'positions': self.positions,
                 'recent_trades': self.trade_history[-10:],  # Last 10 trades
                 'total_trades': len(self.trade_history)
             }
             
-            # Try to get balance if exchange is connected
-            if self.exchange_connected and self.exchange:
-                try:
-                    balance = self.exchange.fetch_balance()
-                    status['balance'] = balance['total']
-                except Exception as e:
-                    status['balance_error'] = str(e)
+            if self.tradingview_only:
+                # Show simulated balance and performance
+                status['paper_balance'] = self.paper_balance
+                status['starting_balance'] = Config.ACCOUNT_BALANCE
+                status['total_pnl'] = self.paper_balance - Config.ACCOUNT_BALANCE
+                status['total_pnl_percent'] = ((self.paper_balance - Config.ACCOUNT_BALANCE) / Config.ACCOUNT_BALANCE) * 100
             else:
-                status['balance'] = 'Exchange not connected'
+                # Try to get real balance if exchange is connected
+                if self.exchange_connected and self.exchange:
+                    try:
+                        balance = self.exchange.fetch_balance()
+                        status['balance'] = balance['total']
+                    except Exception as e:
+                        status['balance_error'] = str(e)
+                else:
+                    status['balance'] = 'Exchange not connected'
             
             return status
             
