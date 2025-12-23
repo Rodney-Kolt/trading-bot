@@ -1,6 +1,6 @@
 # Trading Bot 🤖📈
 
-A complete Python trading bot that receives TradingView alerts and executes trades automatically with built-in risk management.
+A complete **free trading ecosystem** with MT5 signal generation, Python bot execution, and live dashboard monitoring.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -8,25 +8,113 @@ A complete Python trading bot that receives TradingView alerts and executes trad
 
 > ⚠️ **Disclaimer**: This bot is for educational purposes. Trading involves substantial risk of loss. Always test thoroughly before live trading.
 
+## 🎯 Complete System Overview
+
+**Three integrated components for professional trading:**
+
+### 1. 🎯 MT5 Expert Advisor (`mt5_ea/`)
+- **Generates trading signals** using EMA + RSI strategy
+- **Executes demo trades** on MetaTrader 5
+- **Sends webhooks** to Python bot
+- **Visual signals** on charts
+
+### 2. 🤖 Python Trading Bot (`app.py`, `bot.py`)
+- **Receives MT5 signals** via webhook
+- **Applies risk management** (stop loss, position sizing)
+- **Simulates trades** with virtual money
+- **Logs everything** for analysis
+
+### 3. 📊 Streamlit Dashboard (`dashboard/`)
+- **Live monitoring** of bot status and trades
+- **Performance charts** (P&L, win rate, drawdown)
+- **Manual controls** for testing
+- **Real-time updates** from bot
+
+## 🚀 Quick Deploy
+
+### Deploy Python Bot
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template)
+
+1. Click Railway button above
+2. Connect your GitHub account  
+3. Fork this repository
+4. Set environment variables:
+   ```env
+   TRADINGVIEW_ONLY=true
+   ACCOUNT_BALANCE=1000
+   RISK_PERCENT=1.0
+   ```
+
+### Deploy Dashboard
+1. Create new Railway project
+2. Connect to this same repository
+3. Set root directory to `dashboard`
+4. Add environment variable:
+   ```env
+   BOT_URL=https://your-bot-app.railway.app
+   ```
+
+### Setup MT5 EA
+1. Download `mt5_ea/TradingBotEA.mq5`
+2. Install in MetaTrader 5
+3. Configure webhook URL to your Railway bot
+4. Attach to EURUSD 15m chart
+
+**📖 Detailed instructions:** See [`DEPLOY_FROM_GITHUB.md`](DEPLOY_FROM_GITHUB.md)
+
 ## 🚀 Features
 
-✅ **Webhook Receiver** - Accepts TradingView alerts  
-✅ **Risk Management** - Stop loss, position sizing, daily limits  
-✅ **Trade Execution** - Automatic BUY/SELL orders  
-✅ **Logging & Monitoring** - Complete trade history  
-✅ **Safety First** - Multiple protection layers  
+### 🎯 Complete Trading Ecosystem
+✅ **MT5 Signal Generation** - Visual EMA + RSI strategy  
+✅ **Python Bot Execution** - Webhook receiver with risk management  
+✅ **Live Dashboard** - Real-time monitoring and controls  
+✅ **Simulation Mode** - Safe testing with virtual money  
+✅ **Professional Logging** - Complete trade history and analytics  
 
-## 📁 Project Structure
+### 🛡️ Advanced Risk Management
+✅ **Position Sizing** - Risk 1-2% per trade  
+✅ **Stop Loss** - Automatic 2% protection  
+✅ **Take Profit** - 4% target (2:1 risk/reward)  
+✅ **Daily Limits** - Maximum loss protection  
+✅ **Cooldown System** - Prevents overtrading  
+
+### 🔄 Multiple Operating Modes
+✅ **TradingView-Only** - Pure simulation (no exchange needed)  
+✅ **MT5 Integration** - Signal generation + demo trading  
+✅ **Exchange Ready** - Can connect to real exchanges later  
+
+## 🎯 System Workflow
 
 ```
-trading_bot/
-├── app.py              # Flask webhook server
-├── bot.py              # Core trading logic
-├── risk.py             # Risk management system
-├── config.py           # Configuration settings
-├── requirements.txt    # Python dependencies
-├── .env.example        # Environment variables template
-└── README.md          # This file
+MT5 EA → Generates Signals → Python Bot → Dashboard
+   ↓           ↓               ↓           ↓
+Visual      Webhook         Risk        Live
+Charts      Alerts          Management  Monitoring
+```  
+
+## 📁 Repository Structure
+
+```
+trading-bot/
+├── 🤖 Core Bot
+│   ├── app.py              # Flask webhook server
+│   ├── bot.py              # Trading logic & simulation
+│   ├── risk.py             # Risk management system
+│   ├── config.py           # Configuration settings
+│   └── requirements.txt    # Python dependencies
+├── 📊 Dashboard
+│   ├── streamlit_app.py    # Live monitoring interface
+│   ├── requirements.txt    # Dashboard dependencies
+│   └── .streamlit/         # Streamlit configuration
+├── 🎯 MT5 Integration
+│   └── TradingBotEA.mq5    # MetaTrader 5 Expert Advisor
+├── 📈 Strategy
+│   └── strategy.pine       # TradingView Pine Script
+└── 📖 Documentation
+    ├── DEPLOY_FROM_GITHUB.md    # Complete deployment guide
+    ├── COMPLETE_SYSTEM_GUIDE.md # Full system overview
+    ├── TRADINGVIEW_ONLY_SETUP.md # Simulation mode setup
+    └── STRATEGY_SETUP.md        # Strategy configuration
 ```
 
 ## ⚡ Quick Start
