@@ -12,14 +12,22 @@ from config import Config
 
 class TradingBot:
     def __init__(self):
-        self.exchange = self._setup_exchange()
+        self.exchange = None
+        self.exchange_connected = False
         self.risk_manager = RiskManager()
         self.positions = {}  # Track open positions
         self.trade_history = []
         self.last_trade_time = {}  # Cooldown tracking
         self.running = True
         
-        logging.info("Trading Bot initialized")
+        # Try to connect to exchange, but don't fail if it's blocked
+        try:
+            self.exchange = self._setup_exchange()
+            self.exchange_connected = True
+            logging.info("Trading Bot initialized with exchange connection")
+        except Exception as e:
+            logging.warning(f"Exchange connection failed (will retry on first trade): {str(e)}")
+            logging.info("Trading Bot initialized in webhook-only mode")
     
     def _setup_exchange(self):
         """Initialize exchange connection"""
@@ -34,9 +42,17 @@ class TradingBot:
             else:
                 raise ValueError(f"Unsupported exchange: {Config.EXCHANGE}")
             
-            # Test connection
-            exchange.load_markets()
-            logging.info(f"Connected to {Config.EXCHANGE}")
+            # Test connection - but don't fail startup if blocked
+            try:
+                exchange.load_markets()
+                logging.info(f"Connected to {Config.EXCHANGE}")
+            except Exception as e:
+                if "restricted location" in str(e) or "451" in str(e):
+                    logging.warning(f"Exchange blocked by location - will work in webhook mode only")
+                    # Don't load markets, but keep exchange object for later
+                else:
+                    raise e
+            
             return exchange
             
         except Exception as e:
@@ -56,6 +72,14 @@ class TradingBot:
             price = float(signal_data['price'])
             
             logging.info(f"Processing {action} signal for {symbol} at {price}")
+            
+            # Ensure exchange is connected
+            if not self.exchange_connected:
+                try:
+                    self.exchange = self._setup_exchange()
+                    self.exchange_connected = True
+                except Exception as e:
+                    return {"status": "error", "reason": f"Exchange connection failed: {str(e)}"}
             
             # Step 1: Signal validation
             if not self._validate_signal(signal_data):
@@ -108,10 +132,14 @@ class TradingBot:
                 logging.warning(f"Trade cooldown active for {symbol}")
                 return False
         
-        # Validate symbol exists on exchange
-        if symbol not in self.exchange.markets:
-            logging.error(f"Invalid symbol on exchange: {symbol}")
-            return False
+        # Only validate symbol exists if exchange is connected
+        if self.exchange_connected and self.exchange:
+            try:
+                if symbol not in self.exchange.markets:
+                    logging.error(f"Invalid symbol on exchange: {symbol}")
+                    return False
+            except Exception as e:
+                logging.warning(f"Could not validate symbol on exchange: {str(e)}")
         
         # Check if strategy is recognized (optional validation)
         strategy = signal_data.get('strategy', 'unknown')
@@ -242,15 +270,26 @@ class TradingBot:
     def get_status(self) -> Dict:
         """Get current bot status"""
         try:
-            balance = self.exchange.fetch_balance()
-            
-            return {
+            status = {
                 'running': self.running,
+                'exchange_connected': self.exchange_connected,
                 'positions': self.positions,
-                'balance': balance['total'],
                 'recent_trades': self.trade_history[-10:],  # Last 10 trades
                 'total_trades': len(self.trade_history)
             }
+            
+            # Try to get balance if exchange is connected
+            if self.exchange_connected and self.exchange:
+                try:
+                    balance = self.exchange.fetch_balance()
+                    status['balance'] = balance['total']
+                except Exception as e:
+                    status['balance_error'] = str(e)
+            else:
+                status['balance'] = 'Exchange not connected'
+            
+            return status
+            
         except Exception as e:
             logging.error(f"Status check failed: {str(e)}")
             return {'error': str(e)}

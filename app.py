@@ -21,7 +21,15 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
-trading_bot = TradingBot()
+
+# Initialize trading bot - don't fail if exchange is blocked
+try:
+    trading_bot = TradingBot()
+    logging.info("Trading Bot server started successfully")
+except Exception as e:
+    logging.error(f"Failed to initialize trading bot: {str(e)}")
+    # Create a dummy bot that can still receive webhooks
+    trading_bot = None
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -38,6 +46,10 @@ def webhook():
         
         # Log incoming signal
         logging.info(f"Received signal: {data}")
+        
+        # Check if bot is initialized
+        if trading_bot is None:
+            return jsonify({"error": "Trading bot not initialized"}), 500
         
         # Validate required fields
         required_fields = ['action', 'symbol', 'price']
@@ -58,6 +70,9 @@ def webhook():
 def status():
     """Get bot status and recent trades"""
     try:
+        if trading_bot is None:
+            return jsonify({"error": "Trading bot not initialized", "webhook_ready": True}), 200
+        
         status_info = trading_bot.get_status()
         return jsonify(status_info), 200
     except Exception as e:
@@ -70,7 +85,9 @@ def health():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "bot_running": trading_bot.is_running()
+        "bot_initialized": trading_bot is not None,
+        "webhook_ready": True,
+        "exchange_connected": trading_bot.exchange_connected if trading_bot else False
     }), 200
 
 if __name__ == '__main__':
