@@ -9,7 +9,8 @@
 #property strict
 
 // Input Parameters
-input string    WebhookURL = "https://your-app.railway.app/webhook";  // Python bot webhook URL
+input string    WebhookURL = "https://trading-bot-production-c863.up.railway.app/webhook
+";  // Python bot webhook URL
 input int       FastEMA = 9;           // Fast EMA period
 input int       SlowEMA = 21;          // Slow EMA period
 input int       TrendEMA = 200;        // Trend EMA period
@@ -21,7 +22,7 @@ input bool      SendWebhooks = true;   // Send signals to Python bot
 input bool      ExecuteOnMT5 = true;   // Execute trades on MT5 demo
 
 // Global Variables
-double fastEMA[], slowEMA[], trendEMA[], rsi[];  // Fixed: Added [] to slowEMA
+double fastEMA[], slowEMA, trendEMA[], rsi[];
 int fastEMAHandle, slowEMAHandle, trendEMAHandle, rsiHandle;
 datetime lastSignalTime = 0;
 bool inPosition = false;
