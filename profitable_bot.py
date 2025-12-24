@@ -31,9 +31,23 @@ class ProfitableTradingBot:
         self.emergency_stop = False
         self.trade_history = []
         
-        logging.info("🚀 Profitable Trading Bot initialized")
+        # Multi-currency support
+        self.supported_currencies = ['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'EURJPY', 'GBPJPY', 'EURGBP']
+        self.currency_stats = {}
+        for currency in self.supported_currencies:
+            self.currency_stats[currency] = {
+                'signals_today': 0,
+                'trades_today': 0,
+                'wins': 0,
+                'losses': 0,
+                'pnl': 0.0,
+                'last_signal': None
+            }
+        
+        logging.info("🚀 Multi-Currency Profitable Trading Bot initialized")
         logging.info(f"📊 Automation Phase: {self.automation_phase}")
         logging.info(f"💰 Starting Balance: ${Config.ACCOUNT_BALANCE}")
+        logging.info(f"🌍 Supported Currencies: {', '.join(self.supported_currencies)}")
     
     def process_signal(self, signal_data: Dict) -> Dict:
         """
@@ -59,7 +73,7 @@ class ProfitableTradingBot:
             return {"status": "error", "reason": str(e)}
     
     def _handle_trading_signal(self, signal_data: Dict) -> Dict:
-        """Handle BUY/SELL signals based on automation phase"""
+        """Handle BUY/SELL signals based on automation phase with multi-currency support"""
         
         # Reset daily stats if new day
         self._check_new_day()
@@ -71,10 +85,15 @@ class ProfitableTradingBot:
         action = signal_data['action']
         symbol = signal_data.get('symbol', 'UNKNOWN')
         price = float(signal_data.get('price', 0))
-        reason = signal_data.get('reason', 'NO_REASON')
-        auto_trading = signal_data.get('auto_trading', False)
+        strategy = signal_data.get('strategy', 'UNKNOWN')
+        timeframe = signal_data.get('timeframe', '15m')
         
-        logging.info(f"📊 {action} Signal: {symbol} @ {price} | Reason: {reason} | Auto: {auto_trading}")
+        logging.info(f"📊 {action} Signal: {symbol} @ {price} | Strategy: {strategy} | TF: {timeframe}")
+        
+        # Update currency stats
+        if symbol in self.currency_stats:
+            self.currency_stats[symbol]['signals_today'] += 1
+            self.currency_stats[symbol]['last_signal'] = datetime.now().isoformat()
         
         # Log signal regardless of automation phase
         signal_log = {
@@ -82,8 +101,8 @@ class ProfitableTradingBot:
             'action': action,
             'symbol': symbol,
             'price': price,
-            'reason': reason,
-            'auto_trading': auto_trading,
+            'strategy': strategy,
+            'timeframe': timeframe,
             'automation_phase': self.automation_phase,
             'status': 'signal_received'
         }
@@ -93,11 +112,21 @@ class ProfitableTradingBot:
         if self.automation_phase == "SIGNAL_ONLY":
             return {
                 "status": "logged",
-                "message": "Signal logged - Auto trading disabled",
-                "automation_phase": self.automation_phase
+                "message": f"{symbol} {action} signal logged - Auto trading disabled",
+                "automation_phase": self.automation_phase,
+                "symbol": symbol,
+                "action": action,
+                "price": price
             }
         
         elif self.automation_phase == "SEMI_AUTO":
+            return self._process_semi_auto_signal(signal_log)
+        
+        elif self.automation_phase == "FULL_AUTO":
+            return self._process_full_auto_signal(signal_log)
+        
+        else:
+            return {"status": "error", "reason": "Unknown automation phase"}
             # In semi-auto, we validate but don't execute
             validation = self._validate_trade_conditions(signal_data)
             return {
@@ -365,3 +394,160 @@ class ProfitableTradingBot:
             "status": "success",
             "message": "Emergency stop reset - Trading can resume"
         }
+    def _process_semi_auto_signal(self, signal_log: Dict) -> Dict:
+        """Process signal in semi-automatic mode"""
+        # In semi-auto, we validate but don't execute automatically
+        validation = self.risk_manager.validate_trade(
+            signal_log['symbol'], 
+            signal_log['action'], 
+            float(signal_log['price'])
+        )
+        
+        if validation['valid']:
+            return {
+                "status": "validated",
+                "message": f"{signal_log['symbol']} {signal_log['action']} signal validated - Manual approval required",
+                "validation": validation,
+                "signal": signal_log
+            }
+        else:
+            return {
+                "status": "rejected",
+                "reason": validation['reason'],
+                "signal": signal_log
+            }
+    
+    def _process_full_auto_signal(self, signal_log: Dict) -> Dict:
+        """Process signal in full automatic mode"""
+        # Check daily limits
+        if self.daily_stats['trades'] >= 5:
+            return {"status": "rejected", "reason": "Daily trade limit reached"}
+        
+        if self.daily_stats['pnl_percent'] <= -2.0:
+            return {"status": "rejected", "reason": "Daily loss limit reached"}
+        
+        # Validate trade
+        validation = self.risk_manager.validate_trade(
+            signal_log['symbol'], 
+            signal_log['action'], 
+            float(signal_log['price'])
+        )
+        
+        if validation['valid']:
+            # Execute trade automatically
+            trade_result = self._execute_trade(signal_log)
+            return trade_result
+        else:
+            return {
+                "status": "rejected",
+                "reason": validation['reason'],
+                "signal": signal_log
+            }
+    
+    def _execute_trade(self, signal_log: Dict) -> Dict:
+        """Execute trade in simulation mode"""
+        # Simulate trade execution
+        self.daily_stats['trades'] += 1
+        
+        # Update currency stats
+        symbol = signal_log['symbol']
+        if symbol in self.currency_stats:
+            self.currency_stats[symbol]['trades_today'] += 1
+        
+        # Simulate profit/loss (for demo purposes)
+        import random
+        win_rate = 0.65  # 65% win rate for small wins strategy
+        
+        if random.random() < win_rate:
+            # Win
+            profit_percent = random.uniform(0.4, 0.8)  # 0.4-0.8% profit
+            self.daily_stats['wins'] += 1
+            self.daily_stats['consecutive_losses'] = 0
+            if symbol in self.currency_stats:
+                self.currency_stats[symbol]['wins'] += 1
+                self.currency_stats[symbol]['pnl'] += profit_percent
+        else:
+            # Loss
+            profit_percent = -0.5  # Fixed 0.5% loss (tight stop)
+            self.daily_stats['losses'] += 1
+            self.daily_stats['consecutive_losses'] += 1
+            if symbol in self.currency_stats:
+                self.currency_stats[symbol]['losses'] += 1
+                self.currency_stats[symbol]['pnl'] += profit_percent
+        
+        self.daily_stats['pnl_percent'] += profit_percent
+        
+        # Update profit tracker
+        profit_amount = (profit_percent / 100) * self.profit_tracker['current_balance']
+        self.profit_tracker['current_balance'] += profit_amount
+        self.profit_tracker['total_profit'] += profit_amount
+        
+        if self.profit_tracker['total_profit'] > 0:
+            self.profit_tracker['withdrawable_profit'] = self.profit_tracker['total_profit'] * 0.8
+        
+        return {
+            "status": "executed",
+            "message": f"{symbol} {signal_log['action']} trade executed",
+            "profit_percent": profit_percent,
+            "new_balance": self.profit_tracker['current_balance'],
+            "signal": signal_log
+        }
+    
+    def _check_new_day(self):
+        """Reset daily stats if new day"""
+        today = datetime.now().date()
+        if self.daily_stats['last_reset'] != today:
+            self.daily_stats = {
+                'trades': 0,
+                'wins': 0,
+                'losses': 0,
+                'pnl_percent': 0.0,
+                'consecutive_losses': 0,
+                'last_reset': today
+            }
+            # Reset currency daily stats
+            for currency in self.currency_stats:
+                self.currency_stats[currency]['signals_today'] = 0
+                self.currency_stats[currency]['trades_today'] = 0
+    
+    def _handle_emergency_stop(self, signal_data: Dict) -> Dict:
+        """Handle emergency stop signal"""
+        self.emergency_stop = True
+        logging.warning("🚨 EMERGENCY STOP ACTIVATED")
+        return {"status": "emergency_stop_activated"}
+    
+    def _handle_trade_execution(self, signal_data: Dict) -> Dict:
+        """Handle trade execution notification"""
+        return {"status": "trade_execution_logged"}
+    
+    def _handle_trade_closure(self, signal_data: Dict) -> Dict:
+        """Handle trade closure notification"""
+        return {"status": "trade_closure_logged"}
+    
+    def get_status(self) -> Dict:
+        """Get comprehensive bot status including multi-currency data"""
+        return {
+            "automation_phase": self.automation_phase,
+            "emergency_stop": self.emergency_stop,
+            "daily_stats": self.daily_stats,
+            "profit_tracker": self.profit_tracker,
+            "currency_stats": self.currency_stats,
+            "supported_currencies": self.supported_currencies,
+            "recent_signals": self.trade_history[-10:] if self.trade_history else []
+        }
+    
+    def set_automation_phase(self, phase: str) -> bool:
+        """Set automation phase"""
+        valid_phases = ["SIGNAL_ONLY", "SEMI_AUTO", "FULL_AUTO"]
+        if phase in valid_phases:
+            self.automation_phase = phase
+            logging.info(f"🔄 Automation phase changed to: {phase}")
+            return True
+        return False
+    
+    def toggle_emergency_stop(self) -> bool:
+        """Toggle emergency stop"""
+        self.emergency_stop = not self.emergency_stop
+        status = "ACTIVATED" if self.emergency_stop else "DEACTIVATED"
+        logging.warning(f"🚨 Emergency stop {status}")
+        return self.emergency_stop

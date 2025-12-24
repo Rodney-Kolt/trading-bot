@@ -93,11 +93,244 @@ def get_profit_info():
     except Exception as e:
         return {"error": str(e)}
 
-def send_test_signal(action, symbol, price):
-    """Send test signal to bot"""
-    try:
-        data = {
-            "action": action,
+def display_currency_breakdown(bot_status):
+    """Display multi-currency trading breakdown"""
+    if 'currency_stats' not in bot_status:
+        return
+    
+    st.subheader("🌍 Multi-Currency Performance")
+    
+    currency_stats = bot_status['currency_stats']
+    
+    # Create currency performance table
+    currency_data = []
+    for symbol, stats in currency_stats.items():
+        if stats['signals_today'] > 0 or stats['trades_today'] > 0:
+            win_rate = (stats['wins'] / (stats['wins'] + stats['losses']) * 100) if (stats['wins'] + stats['losses']) > 0 else 0
+            currency_data.append({
+                'Currency': symbol,
+                'Signals Today': stats['signals_today'],
+                'Trades Today': stats['trades_today'],
+                'Wins': stats['wins'],
+                'Losses': stats['losses'],
+                'Win Rate': f"{win_rate:.1f}%",
+                'P&L': f"{stats['pnl']:.2f}%",
+                'Last Signal': stats['last_signal'][:19] if stats['last_signal'] else 'None'
+            })
+    
+    if currency_data:
+        df = pd.DataFrame(currency_data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Currency performance chart
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if len(currency_data) > 1:
+                fig_signals = px.bar(df, x='Currency', y='Signals Today', 
+                                   title='Signals by Currency Today')
+                st.plotly_chart(fig_signals, use_container_width=True)
+        
+        with col2:
+            if len(currency_data) > 1:
+                fig_pnl = px.bar(df, x='Currency', y='P&L', 
+                               title='P&L by Currency (%)',
+                               color='P&L',
+                               color_continuous_scale='RdYlGn')
+                st.plotly_chart(fig_pnl, use_container_width=True)
+    else:
+        st.info("No currency activity today. Waiting for signals...")
+
+def display_recent_activity_enhanced(bot_status):
+    """Display enhanced recent activity with multi-currency support"""
+    st.subheader("📈 Recent Activity")
+    
+    if 'recent_signals' in bot_status and bot_status['recent_signals']:
+        activity_data = []
+        for signal in bot_status['recent_signals'][-10:]:  # Last 10 signals
+            activity_data.append({
+                'Time': signal.get('timestamp', '')[:19],
+                'Currency': signal.get('symbol', 'UNKNOWN'),
+                'Action': signal.get('action', 'UNKNOWN'),
+                'Price': signal.get('price', 0),
+                'Strategy': signal.get('strategy', 'UNKNOWN'),
+                'Status': signal.get('status', 'UNKNOWN'),
+                'Phase': signal.get('automation_phase', 'UNKNOWN')
+            })
+        
+        df = pd.DataFrame(activity_data)
+        st.dataframe(df, use_container_width=True)
+        
+        # Activity summary
+        if len(activity_data) > 0:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                unique_currencies = df['Currency'].nunique()
+                st.metric("Active Currencies", unique_currencies)
+            with col2:
+                total_signals = len(activity_data)
+                st.metric("Total Signals", total_signals)
+            with col3:
+                latest_signal = activity_data[0]['Time'] if activity_data else 'None'
+                st.metric("Latest Signal", latest_signal)
+    else:
+        st.info("No recent activity")
+
+# Main dashboard function
+def main():
+    st.title("💰 Profitable Trading Dashboard")
+    st.subheader("Multi-Currency Automated Trading System")
+    
+    # Auto-refresh
+    if st.sidebar.button("🔄 Refresh Data"):
+        st.rerun()
+    
+    # Auto-refresh toggle
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
+    if auto_refresh:
+        time.sleep(30)
+        st.rerun()
+    
+    # Get bot status
+    bot_status = get_bot_status()
+    health_status = get_bot_health()
+    
+    # System Status Header
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if health_status.get('status') == 'healthy':
+            st.success("🟢 System Online")
+        else:
+            st.error("🔴 System Offline")
+    
+    with col2:
+        if 'automation_phase' in bot_status:
+            phase = bot_status['automation_phase']
+            if phase == "FULL_AUTO":
+                st.success(f"🟢 {phase}")
+            elif phase == "SEMI_AUTO":
+                st.warning(f"🟡 {phase}")
+            else:
+                st.info(f"🔵 {phase}")
+        else:
+            st.error("❌ Unknown Phase")
+    
+    with col3:
+        if bot_status.get('emergency_stop'):
+            st.error("🚨 EMERGENCY STOP")
+        else:
+            st.success("✅ Normal Operation")
+    
+    # Main metrics
+    if 'daily_stats' in bot_status:
+        daily_stats = bot_status['daily_stats']
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Daily Trades", daily_stats.get('trades', 0))
+        with col2:
+            pnl = daily_stats.get('pnl_percent', 0)
+            st.metric("Daily P&L", f"{pnl:.2f}%", delta=f"{pnl:.2f}%")
+    
+    # Multi-Currency Performance
+    display_currency_breakdown(bot_status)
+    
+    # Profit Tracker
+    if 'profit_tracker' in bot_status:
+        st.subheader("💰 Profit & Withdrawal Tracker")
+        profit_data = bot_status['profit_tracker']
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Starting Balance", f"${profit_data.get('starting_balance', 0):.2f}")
+        with col2:
+            st.metric("Current Balance", f"${profit_data.get('current_balance', 0):.2f}")
+        with col3:
+            total_profit = profit_data.get('total_profit', 0)
+            st.metric("Total Profit", f"${total_profit:.2f}")
+        with col4:
+            withdrawable = profit_data.get('withdrawable_profit', 0)
+            st.metric("Withdrawable", f"${withdrawable:.2f}")
+        
+        # Withdrawal recommendation
+        if total_profit > 50:
+            st.success("💰 Profit withdrawal recommended!")
+        else:
+            st.info("Continue trading - withdrawal not recommended yet")
+    
+    # Enhanced Recent Activity
+    display_recent_activity_enhanced(bot_status)
+    
+    # Control Panel
+    st.subheader("🎛️ Control Panel")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.write("**Automation Phase**")
+        current_phase = bot_status.get('automation_phase', 'UNKNOWN')
+        new_phase = st.selectbox("Select Phase", 
+                                ["SIGNAL_ONLY", "SEMI_AUTO", "FULL_AUTO"],
+                                index=["SIGNAL_ONLY", "SEMI_AUTO", "FULL_AUTO"].index(current_phase) if current_phase in ["SIGNAL_ONLY", "SEMI_AUTO", "FULL_AUTO"] else 0)
+        
+        if st.button("Update Phase"):
+            result = set_automation_phase(new_phase)
+            if 'error' not in result:
+                st.success(f"Phase updated to {new_phase}")
+            else:
+                st.error(f"Error: {result['error']}")
+    
+    with col2:
+        st.write("**Emergency Controls**")
+        if bot_status.get('emergency_stop'):
+            if st.button("🟢 Reset Emergency Stop"):
+                result = reset_emergency()
+                if 'error' not in result:
+                    st.success("Emergency stop reset")
+                else:
+                    st.error(f"Error: {result['error']}")
+        else:
+            if st.button("🚨 EMERGENCY STOP"):
+                result = emergency_stop()
+                if 'error' not in result:
+                    st.success("Emergency stop activated")
+                else:
+                    st.error(f"Error: {result['error']}")
+    
+    with col3:
+        st.write("**Test Signals**")
+        test_currency = st.selectbox("Currency", ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"])
+        test_action = st.selectbox("Action", ["BUY", "SELL"])
+        
+        if st.button("Send Test Signal"):
+            # Send test signal
+            test_price = {"EURUSD": 1.0425, "GBPUSD": 1.2650, "USDJPY": 157.25, "AUDUSD": 0.6180}
+            price = test_price.get(test_currency, 1.0000)
+            
+            try:
+                response = requests.post(f"{BOT_URL}/webhook", 
+                                       json={
+                                           "action": test_action,
+                                           "symbol": test_currency,
+                                           "price": str(price),
+                                           "strategy": "Dashboard_Test",
+                                           "timeframe": "15m"
+                                       }, timeout=10)
+                if response.status_code == 200:
+                    st.success(f"Test {test_action} signal sent for {test_currency}")
+                else:
+                    st.error(f"Failed to send signal: {response.status_code}")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+    
+    # Debug Information
+    with st.expander("🔍 System Information"):
+        st.write("**Bot Status (Debug)**")
+        st.json(bot_status)
+
+if __name__ == "__main__":
+    main()
             "symbol": symbol,
             "price": str(price),
             "strategy": "DASHBOARD_TEST",
