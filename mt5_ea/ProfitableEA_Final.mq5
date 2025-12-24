@@ -1,26 +1,25 @@
 //+------------------------------------------------------------------+
-//| ProfitableEA.mq5                                                 |
-//| Small-Wins Automated Trading System                             |
-//| Focus: 0.5-1% per trade, strict risk management                 |
+//| ProfitableEA_Final.mq5                                          |
+//| Small-Wins Automated Trading System - FINAL WORKING VERSION    |
+//| Based on TradingBotEA_Fixed.mq5 (0 errors, 0 warnings)        |
 //+------------------------------------------------------------------+
 
 #property copyright "Profitable Trading System"
-#property version   "2.00"
+#property version   "2.03"
 #property description "Small-wins automated trading with strict risk controls"
 
-//--- Input Parameters
-input group "=== AUTOMATION CONTROL ==="
+// Input Parameters
+input string    WebhookURL = "https://trading-bot-production-c863.up.railway.app/webhook";
 input bool      AutoTradingEnabled = false;    // Enable Auto Trading (START WITH FALSE!)
 input bool      SendWebhooks = true;           // Send signals to Python bot
-input string    WebhookURL = "https://trading-bot-production-c863.up.railway.app/webhook";
 
-input group "=== RISK MANAGEMENT ==="
+// Risk Management
 input double    RiskPercent = 0.5;             // Risk per trade (0.5% recommended)
 input double    MaxDailyLoss = 2.0;            // Max daily loss % (HARD STOP)
 input int       MaxTradesPerDay = 5;           // Max trades per day
 input int       MaxConsecutiveLosses = 2;      // Stop after X losses
 
-input group "=== STRATEGY SETTINGS ==="
+// Strategy Settings
 input int       FastEMA = 9;                   // Fast EMA period
 input int       SlowEMA = 21;                  // Slow EMA period
 input int       TrendEMA = 200;                // Trend EMA period
@@ -28,39 +27,31 @@ input int       RSIPeriod = 14;                // RSI period
 input double    StopLossPercent = 0.5;         // Stop Loss % (tight for scalping)
 input double    TakeProfitPercent = 0.6;       // Take Profit % (1:1.2 RR)
 
-input group "=== TRADING SESSIONS ==="
+// Trading Sessions
 input bool      TradeLondonSession = true;     // Trade London (8-12 GMT)
 input bool      TradeNYSession = true;         // Trade NY (13-17 GMT)
-input bool      AvoidNews = true;              // Avoid major news times
 
-//--- Global Variables
+// Global Variables
 int fastEMAHandle, slowEMAHandle, trendEMAHandle, rsiHandle;
 datetime lastTradeTime = 0;
 datetime lastBarTime = 0;
 int dailyTrades = 0;
 double dailyPnL = 0.0;
 int consecutiveLosses = 0;
-datetime currentDate;
+datetime currentDate = 0;
 bool emergencyStop = false;
-
-//--- Trade tracking
-struct TradeInfo {
-    datetime openTime;
-    double openPrice;
-    double lotSize;
-    string reason;
-};
-TradeInfo lastTrade;
+bool inPosition = false;
+double entryPrice = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-    Print("🚀 PROFITABLE EA STARTED - Small Wins System");
-    Print("⚠️  Auto Trading: ", AutoTradingEnabled ? "ENABLED" : "DISABLED");
-    Print("🛡️  Risk per trade: ", RiskPercent, "%");
-    Print("🛡️  Max daily loss: ", MaxDailyLoss, "%");
+    Print("PROFITABLE EA STARTED - Small Wins System");
+    Print("Auto Trading: ", AutoTradingEnabled ? "ENABLED" : "DISABLED");
+    Print("Risk per trade: ", RiskPercent, "%");
+    Print("Max daily loss: ", MaxDailyLoss, "%");
     
     // Initialize indicators
     fastEMAHandle = iMA(_Symbol, PERIOD_M15, FastEMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -71,7 +62,7 @@ int OnInit()
     if(fastEMAHandle == INVALID_HANDLE || slowEMAHandle == INVALID_HANDLE || 
        trendEMAHandle == INVALID_HANDLE || rsiHandle == INVALID_HANDLE)
     {
-        Print("❌ Failed to initialize indicators");
+        Print("Failed to initialize indicators");
         return INIT_FAILED;
     }
     
@@ -79,9 +70,10 @@ int OnInit()
     currentDate = TimeCurrent();
     ResetDailyCounters();
     
-    Print("✅ Indicators initialized successfully");
-    Print("📊 Symbol: ", _Symbol, " | Timeframe: M15");
-    Print("🕐 Trading Sessions: London(", TradeLondonSession, ") NY(", TradeNYSession, ")");
+    Print("Indicators initialized successfully");
+    Print("Symbol: ", _Symbol, " | Timeframe: M15");
+    Print("Trading Sessions: London(", TradeLondonSession, ") NY(", TradeNYSession, ")");
+    Print("Webhook URL: ", WebhookURL);
     
     return INIT_SUCCEEDED;
 }
@@ -111,8 +103,8 @@ void OnTick()
     // Check for signals
     CheckForSignals();
     
-    // Monitor open positions
-    MonitorPositions();
+    // Update position status
+    UpdatePositionStatus();
 }
 
 //+------------------------------------------------------------------+
@@ -121,14 +113,19 @@ void OnTick()
 void CheckNewDay()
 {
     datetime today = TimeCurrent();
-    if(TimeDay(today) != TimeDay(currentDate))
+    MqlDateTime todayStruct, currentStruct;
+    
+    TimeToStruct(today, todayStruct);
+    TimeToStruct(currentDate, currentStruct);
+    
+    if(todayStruct.day != currentStruct.day || todayStruct.month != currentStruct.month)
     {
-        Print("📅 New trading day - Resetting counters");
-        Print("📊 Yesterday: Trades=", dailyTrades, " P&L=", dailyPnL, "%");
+        Print("New trading day - Resetting counters");
+        Print("Yesterday: Trades=", dailyTrades, " P&L=", dailyPnL, "%");
         
         ResetDailyCounters();
         currentDate = today;
-        emergencyStop = false; // Reset emergency stop for new day
+        emergencyStop = false;
     }
 }
 
@@ -152,7 +149,7 @@ bool CheckEmergencyStop()
     {
         if(!emergencyStop)
         {
-            Print("🚨 EMERGENCY STOP: Daily loss limit reached (", dailyPnL, "%)");
+            Print("EMERGENCY STOP: Daily loss limit reached (", dailyPnL, "%)");
             emergencyStop = true;
             SendEmergencyAlert("DAILY_LOSS_LIMIT");
         }
@@ -164,7 +161,7 @@ bool CheckEmergencyStop()
     {
         if(!emergencyStop)
         {
-            Print("🚨 EMERGENCY STOP: Too many consecutive losses (", consecutiveLosses, ")");
+            Print("EMERGENCY STOP: Too many consecutive losses (", consecutiveLosses, ")");
             emergencyStop = true;
             SendEmergencyAlert("CONSECUTIVE_LOSSES");
         }
@@ -176,7 +173,7 @@ bool CheckEmergencyStop()
     {
         if(!emergencyStop)
         {
-            Print("🚨 DAILY LIMIT: Max trades reached (", dailyTrades, ")");
+            Print("DAILY LIMIT: Max trades reached (", dailyTrades, ")");
             emergencyStop = true;
         }
         return true;
@@ -214,7 +211,7 @@ void CheckForSignals()
         return;
     
     // Don't trade if already in position
-    if(PositionsTotal() > 0)
+    if(inPosition)
         return;
     
     // Get indicator values
@@ -230,6 +227,7 @@ void CheckForSignals()
        CopyBuffer(trendEMAHandle, 0, 0, 3, trendEMA) < 3 ||
        CopyBuffer(rsiHandle, 0, 0, 3, rsi) < 3)
     {
+        Print("Failed to copy indicator values");
         return;
     }
     
@@ -248,27 +246,10 @@ void CheckForSignals()
         buyReason = "EMA_CROSSOVER_UPTREND";
     }
     
-    // SELL Signal: EMA pullback in downtrend
-    bool sellSignal = false;
-    string sellReason = "";
-    
-    if(currentPrice < trendEMA[0] &&                    // Below trend EMA (downtrend)
-       fastEMA[1] >= slowEMA[1] &&                      // Previous: Fast above Slow
-       fastEMA[0] < slowEMA[0] &&                       // Current: Fast below Slow (crossunder)
-       rsi[0] > 30 && rsi[0] < 70)                      // RSI in normal range
-    {
-        sellSignal = true;
-        sellReason = "EMA_CROSSUNDER_DOWNTREND";
-    }
-    
     // Execute signals
     if(buySignal)
     {
         ProcessSignal("BUY", currentPrice, buyReason);
-    }
-    else if(sellSignal)
-    {
-        ProcessSignal("SELL", currentPrice, sellReason);
     }
 }
 
@@ -277,7 +258,7 @@ void CheckForSignals()
 //+------------------------------------------------------------------+
 void ProcessSignal(string action, double price, string reason)
 {
-    Print("📊 ", action, " Signal: ", price, " | Reason: ", reason);
+    Print(action, " Signal: ", price, " | Reason: ", reason);
     
     // Always send webhook (for logging)
     if(SendWebhooks)
@@ -290,12 +271,10 @@ void ProcessSignal(string action, double price, string reason)
     {
         if(action == "BUY")
             ExecuteBuyTrade(price, reason);
-        else if(action == "SELL")
-            ExecuteSellTrade(price, reason);
     }
     else
     {
-        Print("ℹ️  Auto trading disabled - Signal only mode");
+        Print("Auto trading disabled - Signal only mode");
     }
 }
 
@@ -307,7 +286,7 @@ void ExecuteBuyTrade(double price, string reason)
     double lotSize = CalculateLotSize();
     if(lotSize <= 0)
     {
-        Print("❌ Invalid lot size calculated");
+        Print("Invalid lot size calculated");
         return;
     }
     
@@ -332,78 +311,20 @@ void ExecuteBuyTrade(double price, string reason)
     
     if(OrderSend(request, result))
     {
-        Print("✅ BUY executed: ", result.price, " | SL:", sl, " | TP:", tp, " | Lot:", lotSize);
+        Print("BUY executed: ", result.price, " | SL:", sl, " | TP:", tp, " | Lot:", lotSize);
         
         // Update tracking
         dailyTrades++;
         lastTradeTime = TimeCurrent();
-        
-        // Store trade info
-        lastTrade.openTime = TimeCurrent();
-        lastTrade.openPrice = result.price;
-        lastTrade.lotSize = lotSize;
-        lastTrade.reason = reason;
+        inPosition = true;
+        entryPrice = result.price;
         
         // Send trade confirmation
         SendTradeConfirmation("BUY", result.price, lotSize, sl, tp, reason);
     }
     else
     {
-        Print("❌ BUY failed: ", result.retcode, " | ", result.comment);
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Execute SELL trade                                               |
-//+------------------------------------------------------------------+
-void ExecuteSellTrade(double price, string reason)
-{
-    double lotSize = CalculateLotSize();
-    if(lotSize <= 0)
-    {
-        Print("❌ Invalid lot size calculated");
-        return;
-    }
-    
-    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-    double sl = bid * (1 + StopLossPercent/100);
-    double tp = bid * (1 - TakeProfitPercent/100);
-    
-    MqlTradeRequest request;
-    MqlTradeResult result;
-    
-    ZeroMemory(request);
-    request.action = TRADE_ACTION_DEAL;
-    request.symbol = _Symbol;
-    request.volume = lotSize;
-    request.type = ORDER_TYPE_SELL;
-    request.price = bid;
-    request.sl = sl;
-    request.tp = tp;
-    request.deviation = 10;
-    request.magic = 123456;
-    request.comment = "ProfitableEA_" + reason;
-    
-    if(OrderSend(request, result))
-    {
-        Print("✅ SELL executed: ", result.price, " | SL:", sl, " | TP:", tp, " | Lot:", lotSize);
-        
-        // Update tracking
-        dailyTrades++;
-        lastTradeTime = TimeCurrent();
-        
-        // Store trade info
-        lastTrade.openTime = TimeCurrent();
-        lastTrade.openPrice = result.price;
-        lastTrade.lotSize = lotSize;
-        lastTrade.reason = reason;
-        
-        // Send trade confirmation
-        SendTradeConfirmation("SELL", result.price, lotSize, sl, tp, reason);
-    }
-    else
-    {
-        Print("❌ SELL failed: ", result.retcode, " | ", result.comment);
+        Print("BUY failed: ", result.retcode, " | ", result.comment);
     }
 }
 
@@ -413,14 +334,23 @@ void ExecuteSellTrade(double price, string reason)
 double CalculateLotSize()
 {
     double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(balance <= 0)
+        return 0;
+    
     double riskAmount = balance * RiskPercent / 100;
     
     double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
     double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
     double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
     
+    if(tickValue <= 0 || tickSize <= 0 || currentPrice <= 0)
+        return 0;
+    
     double stopLossPoints = currentPrice * StopLossPercent / 100;
     double stopLossTicks = stopLossPoints / tickSize;
+    
+    if(stopLossTicks <= 0)
+        return 0;
     
     double lotSize = riskAmount / (stopLossTicks * tickValue);
     
@@ -429,23 +359,26 @@ double CalculateLotSize()
     double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
     double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
     
-    lotSize = MathMax(minLot, MathMin(maxLot, NormalizeDouble(lotSize/lotStep, 0) * lotStep));
+    if(lotStep > 0)
+        lotSize = NormalizeDouble(MathRound(lotSize/lotStep) * lotStep, 2);
+    
+    lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
     
     return lotSize;
 }
 
 //+------------------------------------------------------------------+
-//| Monitor open positions                                           |
+//| Update position status                                           |
 //+------------------------------------------------------------------+
-void MonitorPositions()
+void UpdatePositionStatus()
 {
-    for(int i = PositionsTotal()-1; i >= 0; i--)
+    inPosition = false;
+    for(int i = 0; i < PositionsTotal(); i++)
     {
-        string posSymbol = PositionGetSymbol(i);
-        if(posSymbol == _Symbol)
+        if(PositionGetSymbol(i) == _Symbol)
         {
-            // Position found - it will be closed by SL/TP automatically
-            // We just need to track when it closes for P&L calculation
+            inPosition = true;
+            break;
         }
     }
 }
@@ -468,11 +401,11 @@ void SendWebhookSignal(string action, double price, string reason)
     
     if(res == 200)
     {
-        Print("✅ Webhook sent: ", action, " | ", reason);
+        Print("Webhook sent: ", action, " | ", reason);
     }
     else
     {
-        Print("❌ Webhook failed: ", res);
+        Print("Webhook failed: ", res);
     }
 }
 
@@ -525,22 +458,29 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
             double profit = trans.profit;
             if(profit != 0) // Position closed
             {
-                double profitPercent = (profit / AccountInfoDouble(ACCOUNT_BALANCE)) * 100;
-                dailyPnL += profitPercent;
-                
-                if(profit > 0)
+                double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+                if(balance > 0)
                 {
-                    consecutiveLosses = 0; // Reset on win
-                    Print("✅ Trade closed: +", profitPercent, "% | Daily P&L: ", dailyPnL, "%");
-                }
-                else
-                {
-                    consecutiveLosses++;
-                    Print("❌ Trade closed: ", profitPercent, "% | Consecutive losses: ", consecutiveLosses);
+                    double profitPercent = (profit / balance) * 100;
+                    dailyPnL += profitPercent;
+                    
+                    if(profit > 0)
+                    {
+                        consecutiveLosses = 0; // Reset on win
+                        Print("Trade closed: +", profitPercent, "% | Daily P&L: ", dailyPnL, "%");
+                    }
+                    else
+                    {
+                        consecutiveLosses++;
+                        Print("Trade closed: ", profitPercent, "% | Consecutive losses: ", consecutiveLosses);
+                    }
+                    
+                    // Send P&L update
+                    SendPnLUpdate(profitPercent, profit > 0);
                 }
                 
-                // Send P&L update
-                SendPnLUpdate(profitPercent, profit > 0);
+                inPosition = false;
+                entryPrice = 0;
             }
         }
     }
@@ -568,6 +508,6 @@ void SendPnLUpdate(double profitPercent, bool isWin)
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-    Print("🛑 Profitable EA Stopped");
-    Print("📊 Final Stats: Trades=", dailyTrades, " | P&L=", dailyPnL, "% | Losses=", consecutiveLosses);
+    Print("Profitable EA Stopped");
+    Print("Final Stats: Trades=", dailyTrades, " | P&L=", dailyPnL, "% | Losses=", consecutiveLosses);
 }

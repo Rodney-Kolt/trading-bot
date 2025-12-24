@@ -1,9 +1,8 @@
 """
-Trading Bot - Core Logic & Trade Execution Engine
-Handles signal validation, risk management, and order execution
+Profitable Trading Bot - Risk Guardian & Automation Controller
+Enhanced version focused on small wins and strict risk management
 """
 
-import ccxt
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
@@ -12,406 +11,357 @@ from config import Config
 
 class TradingBot:
     def __init__(self):
-        self.exchange = None
-        self.exchange_connected = False
-        self.tradingview_only = Config.TRADINGVIEW_ONLY
         self.risk_manager = RiskManager()
-        self.positions = {}  # Track simulated positions
+        self.automation_phase = "SIGNAL_ONLY"  # SIGNAL_ONLY, SEMI_AUTO, FULL_AUTO
+        self.daily_stats = {
+            'trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'pnl_percent': 0.0,
+            'consecutive_losses': 0,
+            'last_reset': datetime.now().date()
+        }
+        self.profit_tracker = {
+            'starting_balance': Config.ACCOUNT_BALANCE,
+            'current_balance': Config.ACCOUNT_BALANCE,
+            'total_profit': 0.0,
+            'withdrawable_profit': 0.0,
+            'last_withdrawal': 0.0
+        }
+        self.emergency_stop = False
         self.trade_history = []
-        self.last_trade_time = {}  # Cooldown tracking
-        self.running = True
-        self.paper_balance = Config.ACCOUNT_BALANCE  # Simulated balance
         
-        if self.tradingview_only:
-            logging.info("Trading Bot initialized in TradingView-only mode (no exchange needed)")
-        else:
-            # Try to connect to exchange, but don't fail if it's blocked
-            try:
-                self.exchange = self._setup_exchange()
-                self.exchange_connected = True
-                logging.info("Trading Bot initialized with exchange connection")
-            except Exception as e:
-                logging.warning(f"Exchange connection failed (will retry on first trade): {str(e)}")
-                logging.info("Trading Bot initialized in webhook-only mode")
-    
-    def _setup_exchange(self):
-        """Initialize exchange connection"""
-        try:
-            if Config.EXCHANGE == 'binance':
-                exchange = ccxt.binance({
-                    'apiKey': Config.API_KEY,
-                    'secret': Config.API_SECRET,
-                    'sandbox': Config.SANDBOX_MODE,
-                    'enableRateLimit': True,
-                })
-            else:
-                raise ValueError(f"Unsupported exchange: {Config.EXCHANGE}")
-            
-            # Test connection - but don't fail startup if blocked
-            try:
-                exchange.load_markets()
-                logging.info(f"Connected to {Config.EXCHANGE}")
-            except Exception as e:
-                if "restricted location" in str(e) or "451" in str(e):
-                    logging.warning(f"Exchange blocked by location - will work in webhook mode only")
-                    # Don't load markets, but keep exchange object for later
-                else:
-                    raise e
-            
-            return exchange
-            
-        except Exception as e:
-            logging.error(f"Exchange setup failed: {str(e)}")
-            raise
+        logging.info("🚀 Profitable Trading Bot initialized")
+        logging.info(f"📊 Automation Phase: {self.automation_phase}")
+        logging.info(f"💰 Starting Balance: ${Config.ACCOUNT_BALANCE}")
     
     def process_signal(self, signal_data: Dict) -> Dict:
         """
-        Main signal processing pipeline
-        1. Validate signal
-        2. Check risk rules
-        3. Execute trade (real or simulated)
+        Enhanced signal processing with automation phases
         """
         try:
-            action = signal_data['action'].upper()
-            symbol = signal_data['symbol']
-            price = float(signal_data['price'])
+            action = signal_data.get('action', '').upper()
             
-            logging.info(f"Processing {action} signal for {symbol} at {price}")
-            
-            # Step 1: Signal validation
-            if not self._validate_signal(signal_data):
-                return {"status": "rejected", "reason": "Signal validation failed"}
-            
-            # Step 2: Risk management check
-            risk_check = self.risk_manager.check_trade_allowed(
-                symbol, action, price, self.positions
-            )
-            
-            if not risk_check['allowed']:
-                return {"status": "rejected", "reason": risk_check['reason']}
-            
-            # Step 3: Execute trade (real or simulated)
-            if self.tradingview_only:
-                # Simulate the trade
-                if action == 'BUY':
-                    result = self._simulate_buy(symbol, price, risk_check['position_size'])
-                elif action == 'SELL':
-                    result = self._simulate_sell(symbol, price)
-                else:
-                    return {"status": "rejected", "reason": f"Invalid action: {action}"}
+            # Handle different message types
+            if action == "EMERGENCY_STOP":
+                return self._handle_emergency_stop(signal_data)
+            elif action == "TRADE_EXECUTED":
+                return self._handle_trade_execution(signal_data)
+            elif action == "TRADE_CLOSED":
+                return self._handle_trade_closure(signal_data)
+            elif action in ["BUY", "SELL"]:
+                return self._handle_trading_signal(signal_data)
             else:
-                # Real exchange trading
-                # Ensure exchange is connected
-                if not self.exchange_connected:
-                    try:
-                        self.exchange = self._setup_exchange()
-                        self.exchange_connected = True
-                    except Exception as e:
-                        return {"status": "error", "reason": f"Exchange connection failed: {str(e)}"}
+                return {"status": "unknown_action", "action": action}
                 
-                if action == 'BUY':
-                    result = self._execute_buy(symbol, price, risk_check['position_size'])
-                elif action == 'SELL':
-                    result = self._execute_sell(symbol, price)
-                else:
-                    return {"status": "rejected", "reason": f"Invalid action: {action}"}
-            
-            # Log trade
-            self._log_trade(signal_data, result)
-            
-            return result
-            
         except Exception as e:
             logging.error(f"Signal processing error: {str(e)}")
             return {"status": "error", "reason": str(e)}
     
-    def _validate_signal(self, signal_data: Dict) -> bool:
-        """
-        Signal validation rules:
-        - Check cooldown period
-        - Verify allowed symbols
-        - Validate strategy source
-        - Check market conditions
-        """
-        symbol = signal_data['symbol']
+    def _handle_trading_signal(self, signal_data: Dict) -> Dict:
+        """Handle BUY/SELL signals based on automation phase"""
         
-        # Check if symbol is allowed
-        if symbol not in Config.ALLOWED_SYMBOLS:
-            logging.warning(f"Symbol not in allowed list: {symbol}")
-            return False
+        # Reset daily stats if new day
+        self._check_new_day()
         
-        # Check cooldown (prevent spam trades)
-        if symbol in self.last_trade_time:
-            time_since_last = datetime.now() - self.last_trade_time[symbol]
-            if time_since_last < timedelta(minutes=Config.TRADE_COOLDOWN_MINUTES):
-                logging.warning(f"Trade cooldown active for {symbol}")
-                return False
+        # Check if emergency stop is active
+        if self.emergency_stop:
+            return {"status": "rejected", "reason": "Emergency stop active"}
         
-        # Only validate symbol exists if exchange is connected
-        if self.exchange_connected and self.exchange:
-            try:
-                if symbol not in self.exchange.markets:
-                    logging.error(f"Invalid symbol on exchange: {symbol}")
-                    return False
-            except Exception as e:
-                logging.warning(f"Could not validate symbol on exchange: {str(e)}")
+        action = signal_data['action']
+        symbol = signal_data.get('symbol', 'UNKNOWN')
+        price = float(signal_data.get('price', 0))
+        reason = signal_data.get('reason', 'NO_REASON')
+        auto_trading = signal_data.get('auto_trading', False)
         
-        # Check if strategy is recognized (optional validation)
-        strategy = signal_data.get('strategy', 'unknown')
-        if strategy not in ['EMA_RSI', 'unknown']:
-            logging.warning(f"Unknown strategy: {strategy}")
+        logging.info(f"📊 {action} Signal: {symbol} @ {price} | Reason: {reason} | Auto: {auto_trading}")
         
-        # Validate timeframe (prefer higher timeframes)
-        timeframe = signal_data.get('timeframe', '15m')
-        if timeframe not in ['15m', '1h', '4h', '1d']:
-            logging.warning(f"Low timeframe detected: {timeframe}")
+        # Log signal regardless of automation phase
+        signal_log = {
+            'timestamp': datetime.now().isoformat(),
+            'action': action,
+            'symbol': symbol,
+            'price': price,
+            'reason': reason,
+            'auto_trading': auto_trading,
+            'automation_phase': self.automation_phase,
+            'status': 'signal_received'
+        }
+        self.trade_history.append(signal_log)
         
-        return True
-    
-    def _simulate_buy(self, symbol: str, price: float, position_size: float) -> Dict:
-        """Simulate BUY order for TradingView-only mode"""
-        try:
-            # Check if already in position
-            if symbol in self.positions:
-                logging.warning(f"Already in simulated position for {symbol}")
-                return {"status": "rejected", "reason": "Already in position"}
-            
-            # Calculate position value
-            position_value = position_size * price
-            
-            # Check if we have enough balance
-            if position_value > self.paper_balance:
-                logging.warning(f"Insufficient simulated balance: ${self.paper_balance:.2f}")
-                return {"status": "rejected", "reason": "Insufficient balance"}
-            
-            # Deduct from paper balance
-            self.paper_balance -= position_value
-            
-            # Store simulated position
-            self.positions[symbol] = {
-                'side': 'long',
-                'size': position_size,
-                'entry_price': price,
-                'timestamp': datetime.now(),
-                'order_id': f"SIM_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                'simulated': True
+        # Process based on automation phase
+        if self.automation_phase == "SIGNAL_ONLY":
+            return {
+                "status": "logged",
+                "message": "Signal logged - Auto trading disabled",
+                "automation_phase": self.automation_phase
             }
-            
-            # Set stop loss and take profit
-            self._set_stop_loss_take_profit(symbol, price)
-            
-            # Update cooldown
-            self.last_trade_time[symbol] = datetime.now()
-            
-            logging.info(f"SIMULATED BUY: {symbol} - Size: {position_size} - Price: ${price} - Value: ${position_value:.2f}")
+        
+        elif self.automation_phase == "SEMI_AUTO":
+            # In semi-auto, we validate but don't execute
+            validation = self._validate_trade_conditions(signal_data)
+            return {
+                "status": "validated",
+                "validation": validation,
+                "automation_phase": self.automation_phase,
+                "message": "Trade validated - Manual execution required"
+            }
+        
+        elif self.automation_phase == "FULL_AUTO":
+            # In full auto, EA handles execution, we just validate and log
+            validation = self._validate_trade_conditions(signal_data)
+            if not validation['allowed']:
+                logging.warning(f"Trade validation failed: {validation['reason']}")
             
             return {
-                "status": "executed",
-                "action": "BUY",
-                "symbol": symbol,
-                "size": position_size,
-                "price": price,
-                "order_id": self.positions[symbol]['order_id'],
-                "mode": "SIMULATED",
-                "remaining_balance": self.paper_balance
+                "status": "processed",
+                "validation": validation,
+                "automation_phase": self.automation_phase,
+                "message": "Signal processed - EA handles execution"
             }
-            
-        except Exception as e:
-            logging.error(f"Simulated buy failed: {str(e)}")
-            return {"status": "error", "reason": str(e)}
+        
+        return {"status": "unknown_phase", "automation_phase": self.automation_phase}
     
-    def _simulate_sell(self, symbol: str, price: float) -> Dict:
-        """Simulate SELL order for TradingView-only mode"""
-        try:
-            # Check if in position
-            if symbol not in self.positions:
-                logging.warning(f"No simulated position to sell for {symbol}")
-                return {"status": "rejected", "reason": "No position to sell"}
-            
-            position = self.positions[symbol]
-            
-            # Calculate P&L
-            entry_price = position['entry_price']
-            exit_price = price
-            position_value = position['size'] * exit_price
-            pnl = (exit_price - entry_price) * position['size']
-            pnl_percent = ((exit_price - entry_price) / entry_price) * 100
-            
-            # Add proceeds to paper balance
-            self.paper_balance += position_value
-            
-            # Remove position
-            del self.positions[symbol]
-            
-            # Update cooldown
-            self.last_trade_time[symbol] = datetime.now()
-            
-            logging.info(f"SIMULATED SELL: {symbol} - P&L: ${pnl:.2f} ({pnl_percent:.2f}%) - Balance: ${self.paper_balance:.2f}")
-            
-            return {
-                "status": "executed",
-                "action": "SELL",
-                "symbol": symbol,
-                "size": position['size'],
-                "price": price,
-                "pnl": pnl,
-                "pnl_percent": pnl_percent,
-                "order_id": f"SIM_SELL_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "mode": "SIMULATED",
-                "new_balance": self.paper_balance
-            }
-            
-        except Exception as e:
-            logging.error(f"Simulated sell failed: {str(e)}")
-            return {"status": "error", "reason": str(e)}
-        """Execute BUY order"""
-        try:
-            # Check if already in position
-            if symbol in self.positions:
-                logging.warning(f"Already in position for {symbol}")
-                return {"status": "rejected", "reason": "Already in position"}
-            
-            # Place market buy order
-            order = self.exchange.create_market_buy_order(symbol, position_size)
-            
-            # Store position
-            self.positions[symbol] = {
-                'side': 'long',
-                'size': position_size,
-                'entry_price': order['average'] or price,
-                'timestamp': datetime.now(),
-                'order_id': order['id']
-            }
-            
-            # Set stop loss and take profit
-            self._set_stop_loss_take_profit(symbol, order['average'] or price)
-            
-            # Update cooldown
-            self.last_trade_time[symbol] = datetime.now()
-            
-            logging.info(f"BUY executed: {symbol} - Size: {position_size} - Price: {order['average']}")
-            
-            return {
-                "status": "executed",
-                "action": "BUY",
-                "symbol": symbol,
-                "size": position_size,
-                "price": order['average'],
-                "order_id": order['id']
-            }
-            
-        except Exception as e:
-            logging.error(f"Buy execution failed: {str(e)}")
-            return {"status": "error", "reason": str(e)}
-    
-    def _execute_sell(self, symbol: str, price: float) -> Dict:
-        """Execute SELL order"""
-        try:
-            # Check if in position
-            if symbol not in self.positions:
-                logging.warning(f"No position to sell for {symbol}")
-                return {"status": "rejected", "reason": "No position to sell"}
-            
-            position = self.positions[symbol]
-            
-            # Place market sell order
-            order = self.exchange.create_market_sell_order(symbol, position['size'])
-            
-            # Calculate P&L
-            entry_price = position['entry_price']
-            exit_price = order['average'] or price
-            pnl = (exit_price - entry_price) * position['size']
-            pnl_percent = ((exit_price - entry_price) / entry_price) * 100
-            
-            # Remove position
-            del self.positions[symbol]
-            
-            # Update cooldown
-            self.last_trade_time[symbol] = datetime.now()
-            
-            logging.info(f"SELL executed: {symbol} - P&L: {pnl:.2f} ({pnl_percent:.2f}%)")
-            
-            return {
-                "status": "executed",
-                "action": "SELL",
-                "symbol": symbol,
-                "size": position['size'],
-                "price": order['average'],
-                "pnl": pnl,
-                "pnl_percent": pnl_percent,
-                "order_id": order['id']
-            }
-            
-        except Exception as e:
-            logging.error(f"Sell execution failed: {str(e)}")
-            return {"status": "error", "reason": str(e)}
-    
-    def _set_stop_loss_take_profit(self, symbol: str, entry_price: float):
-        """Set stop loss and take profit orders"""
-        try:
-            position = self.positions[symbol]
-            
-            # Calculate stop loss and take profit prices
-            stop_loss_price = entry_price * (1 - Config.STOP_LOSS_PERCENT / 100)
-            take_profit_price = entry_price * (1 + Config.TAKE_PROFIT_PERCENT / 100)
-            
-            # Note: This is simplified - in production you'd place actual stop orders
-            position['stop_loss'] = stop_loss_price
-            position['take_profit'] = take_profit_price
-            
-            logging.info(f"Stop Loss: {stop_loss_price:.2f}, Take Profit: {take_profit_price:.2f}")
-            
-        except Exception as e:
-            logging.error(f"Failed to set stop loss/take profit: {str(e)}")
-    
-    def _log_trade(self, signal_data: Dict, result: Dict):
-        """Log trade to history"""
+    def _handle_trade_execution(self, signal_data: Dict) -> Dict:
+        """Handle trade execution confirmation from MT5 EA"""
+        
+        symbol = signal_data.get('symbol', 'UNKNOWN')
+        side = signal_data.get('side', 'UNKNOWN')
+        price = float(signal_data.get('price', 0))
+        lot_size = float(signal_data.get('lot_size', 0))
+        stop_loss = float(signal_data.get('stop_loss', 0))
+        take_profit = float(signal_data.get('take_profit', 0))
+        reason = signal_data.get('reason', 'NO_REASON')
+        daily_trades = int(signal_data.get('daily_trades', 0))
+        
+        logging.info(f"✅ Trade Executed: {side} {symbol} @ {price} | Lot: {lot_size} | SL: {stop_loss} | TP: {take_profit}")
+        
+        # Update daily stats
+        self.daily_stats['trades'] = daily_trades
+        
+        # Log trade execution
         trade_log = {
             'timestamp': datetime.now().isoformat(),
-            'signal': signal_data,
-            'result': result
+            'action': 'TRADE_EXECUTED',
+            'symbol': symbol,
+            'side': side,
+            'price': price,
+            'lot_size': lot_size,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'reason': reason,
+            'daily_trades': daily_trades,
+            'status': 'executed'
         }
         self.trade_history.append(trade_log)
         
-        # Keep only last 1000 trades
-        if len(self.trade_history) > 1000:
-            self.trade_history = self.trade_history[-1000:]
+        return {
+            "status": "trade_logged",
+            "message": f"{side} trade executed and logged",
+            "daily_trades": daily_trades
+        }
+    
+    def _handle_trade_closure(self, signal_data: Dict) -> Dict:
+        """Handle trade closure and P&L update"""
+        
+        symbol = signal_data.get('symbol', 'UNKNOWN')
+        profit_percent = float(signal_data.get('profit_percent', 0))
+        is_win = signal_data.get('is_win', False)
+        daily_pnl = float(signal_data.get('daily_pnl', 0))
+        consecutive_losses = int(signal_data.get('consecutive_losses', 0))
+        
+        logging.info(f"📊 Trade Closed: {symbol} | P&L: {profit_percent:.3f}% | Win: {is_win} | Daily: {daily_pnl:.2f}%")
+        
+        # Update daily stats
+        self.daily_stats['pnl_percent'] = daily_pnl
+        self.daily_stats['consecutive_losses'] = consecutive_losses
+        
+        if is_win:
+            self.daily_stats['wins'] += 1
+        else:
+            self.daily_stats['losses'] += 1
+        
+        # Update profit tracker
+        self._update_profit_tracker(profit_percent)
+        
+        # Log trade closure
+        trade_log = {
+            'timestamp': datetime.now().isoformat(),
+            'action': 'TRADE_CLOSED',
+            'symbol': symbol,
+            'profit_percent': profit_percent,
+            'is_win': is_win,
+            'daily_pnl': daily_pnl,
+            'consecutive_losses': consecutive_losses,
+            'status': 'closed'
+        }
+        self.trade_history.append(trade_log)
+        
+        # Check for withdrawal recommendation
+        withdrawal_rec = self._check_withdrawal_recommendation()
+        
+        return {
+            "status": "trade_closed",
+            "profit_percent": profit_percent,
+            "is_win": is_win,
+            "daily_pnl": daily_pnl,
+            "withdrawal_recommendation": withdrawal_rec
+        }
+    
+    def _handle_emergency_stop(self, signal_data: Dict) -> Dict:
+        """Handle emergency stop from MT5 EA"""
+        
+        alert_type = signal_data.get('alert_type', 'UNKNOWN')
+        daily_pnl = float(signal_data.get('daily_pnl', 0))
+        daily_trades = int(signal_data.get('daily_trades', 0))
+        consecutive_losses = int(signal_data.get('consecutive_losses', 0))
+        
+        logging.critical(f"🚨 EMERGENCY STOP: {alert_type} | P&L: {daily_pnl}% | Trades: {daily_trades} | Losses: {consecutive_losses}")
+        
+        self.emergency_stop = True
+        self.daily_stats['pnl_percent'] = daily_pnl
+        self.daily_stats['trades'] = daily_trades
+        self.daily_stats['consecutive_losses'] = consecutive_losses
+        
+        # Log emergency stop
+        emergency_log = {
+            'timestamp': datetime.now().isoformat(),
+            'action': 'EMERGENCY_STOP',
+            'alert_type': alert_type,
+            'daily_pnl': daily_pnl,
+            'daily_trades': daily_trades,
+            'consecutive_losses': consecutive_losses,
+            'status': 'emergency_stop'
+        }
+        self.trade_history.append(emergency_log)
+        
+        return {
+            "status": "emergency_stop_activated",
+            "alert_type": alert_type,
+            "message": "Trading stopped due to risk limits"
+        }
+    
+    def _validate_trade_conditions(self, signal_data: Dict) -> Dict:
+        """Validate if trade should be allowed"""
+        
+        # Basic validation
+        if self.emergency_stop:
+            return {"allowed": False, "reason": "Emergency stop active"}
+        
+        if self.daily_stats['trades'] >= 5:  # Max trades per day
+            return {"allowed": False, "reason": "Daily trade limit reached"}
+        
+        if self.daily_stats['pnl_percent'] <= -2.0:  # Max daily loss
+            return {"allowed": False, "reason": "Daily loss limit reached"}
+        
+        if self.daily_stats['consecutive_losses'] >= 2:  # Max consecutive losses
+            return {"allowed": False, "reason": "Too many consecutive losses"}
+        
+        return {"allowed": True, "reason": "All conditions passed"}
+    
+    def _update_profit_tracker(self, profit_percent: float):
+        """Update profit tracking"""
+        
+        profit_amount = (profit_percent / 100) * self.profit_tracker['starting_balance']
+        self.profit_tracker['total_profit'] += profit_amount
+        self.profit_tracker['current_balance'] += profit_amount
+        
+        # Calculate withdrawable profit (keep some buffer for trading)
+        buffer_amount = self.profit_tracker['starting_balance'] * 0.1  # 10% buffer
+        self.profit_tracker['withdrawable_profit'] = max(0, 
+            self.profit_tracker['total_profit'] - buffer_amount)
+    
+    def _check_withdrawal_recommendation(self) -> Dict:
+        """Check if withdrawal is recommended"""
+        
+        total_return = (self.profit_tracker['total_profit'] / self.profit_tracker['starting_balance']) * 100
+        
+        # Recommend withdrawal if:
+        # 1. Weekly profit > 5%
+        # 2. Total profit > $100
+        # 3. Withdrawable amount > $50
+        
+        should_withdraw = (
+            total_return >= 5.0 and 
+            self.profit_tracker['total_profit'] >= 100 and
+            self.profit_tracker['withdrawable_profit'] >= 50
+        )
+        
+        return {
+            "should_withdraw": should_withdraw,
+            "withdrawable_amount": self.profit_tracker['withdrawable_profit'],
+            "total_return_percent": total_return,
+            "message": "Consider withdrawing profits" if should_withdraw else "Continue trading"
+        }
+    
+    def _check_new_day(self):
+        """Check if it's a new day and reset counters"""
+        
+        today = datetime.now().date()
+        if today != self.daily_stats['last_reset']:
+            logging.info(f"📅 New day - Resetting daily stats")
+            logging.info(f"📊 Yesterday: {self.daily_stats}")
+            
+            self.daily_stats = {
+                'trades': 0,
+                'wins': 0,
+                'losses': 0,
+                'pnl_percent': 0.0,
+                'consecutive_losses': 0,
+                'last_reset': today
+            }
+            self.emergency_stop = False  # Reset emergency stop for new day
+    
+    def set_automation_phase(self, phase: str) -> Dict:
+        """Set automation phase"""
+        
+        valid_phases = ["SIGNAL_ONLY", "SEMI_AUTO", "FULL_AUTO"]
+        if phase not in valid_phases:
+            return {"status": "error", "message": f"Invalid phase. Must be one of: {valid_phases}"}
+        
+        old_phase = self.automation_phase
+        self.automation_phase = phase
+        
+        logging.info(f"🔄 Automation phase changed: {old_phase} → {phase}")
+        
+        return {
+            "status": "success",
+            "old_phase": old_phase,
+            "new_phase": phase,
+            "message": f"Automation phase set to {phase}"
+        }
     
     def get_status(self) -> Dict:
-        """Get current bot status"""
-        try:
-            status = {
-                'running': self.running,
-                'mode': 'TradingView-only (Simulated)' if self.tradingview_only else 'Live Trading',
-                'exchange_connected': self.exchange_connected,
-                'positions': self.positions,
-                'recent_trades': self.trade_history[-10:],  # Last 10 trades
-                'total_trades': len(self.trade_history)
-            }
-            
-            if self.tradingview_only:
-                # Show simulated balance and performance
-                status['paper_balance'] = self.paper_balance
-                status['starting_balance'] = Config.ACCOUNT_BALANCE
-                status['total_pnl'] = self.paper_balance - Config.ACCOUNT_BALANCE
-                status['total_pnl_percent'] = ((self.paper_balance - Config.ACCOUNT_BALANCE) / Config.ACCOUNT_BALANCE) * 100
-            else:
-                # Try to get real balance if exchange is connected
-                if self.exchange_connected and self.exchange:
-                    try:
-                        balance = self.exchange.fetch_balance()
-                        status['balance'] = balance['total']
-                    except Exception as e:
-                        status['balance_error'] = str(e)
-                else:
-                    status['balance'] = 'Exchange not connected'
-            
-            return status
-            
-        except Exception as e:
-            logging.error(f"Status check failed: {str(e)}")
-            return {'error': str(e)}
+        """Get comprehensive bot status"""
+        
+        self._check_new_day()
+        
+        # Calculate win rate
+        total_closed = self.daily_stats['wins'] + self.daily_stats['losses']
+        win_rate = (self.daily_stats['wins'] / total_closed * 100) if total_closed > 0 else 0
+        
+        return {
+            'running': True,
+            'automation_phase': self.automation_phase,
+            'emergency_stop': self.emergency_stop,
+            'daily_stats': {
+                **self.daily_stats,
+                'win_rate': win_rate,
+                'total_closed_trades': total_closed
+            },
+            'profit_tracker': self.profit_tracker,
+            'withdrawal_recommendation': self._check_withdrawal_recommendation(),
+            'recent_trades': self.trade_history[-10:],
+            'total_signals': len(self.trade_history)
+        }
     
-    def is_running(self) -> bool:
-        """Check if bot is running"""
-        return self.running
+    def reset_emergency_stop(self) -> Dict:
+        """Manual reset of emergency stop (admin function)"""
+        
+        self.emergency_stop = False
+        logging.info("🔄 Emergency stop manually reset")
+        
+        return {
+            "status": "success",
+            "message": "Emergency stop reset - Trading can resume"
+        }
