@@ -127,27 +127,6 @@ class ProfitableTradingBot:
         
         else:
             return {"status": "error", "reason": "Unknown automation phase"}
-            # In semi-auto, we validate but don't execute
-            validation = self._validate_trade_conditions(signal_data)
-            return {
-                "status": "validated",
-                "validation": validation,
-                "automation_phase": self.automation_phase,
-                "message": "Trade validated - Manual execution required"
-            }
-        
-        elif self.automation_phase == "FULL_AUTO":
-            # In full auto, EA handles execution, we just validate and log
-            validation = self._validate_trade_conditions(signal_data)
-            if not validation['allowed']:
-                logging.warning(f"Trade validation failed: {validation['reason']}")
-            
-            return {
-                "status": "processed",
-                "validation": validation,
-                "automation_phase": self.automation_phase,
-                "message": "Signal processed - EA handles execution"
-            }
         
         return {"status": "unknown_phase", "automation_phase": self.automation_phase}
     
