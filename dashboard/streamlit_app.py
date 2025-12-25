@@ -62,7 +62,10 @@ def set_automation_phase(phase):
         response = requests.post(f"{BOT_URL}/automation", 
                                json={"phase": phase}, 
                                timeout=10)
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"HTTP {response.status_code}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -70,7 +73,10 @@ def emergency_stop():
     """Trigger emergency stop"""
     try:
         response = requests.post(f"{BOT_URL}/emergency-stop", timeout=10)
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"HTTP {response.status_code}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -78,7 +84,10 @@ def reset_emergency():
     """Reset emergency stop"""
     try:
         response = requests.post(f"{BOT_URL}/reset-emergency", timeout=10)
-        return response.json()
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"HTTP {response.status_code}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -128,7 +137,7 @@ def main():
         st.subheader("🤖 Automation Phase")
         
         automation_status = get_automation_status()
-        if "error" not in automation_status:
+        if isinstance(automation_status, dict) and "error" not in automation_status:
             current_phase = automation_status.get("automation_phase", "UNKNOWN")
             emergency_active = automation_status.get("emergency_stop", False)
             
@@ -152,7 +161,7 @@ def main():
             if st.button("🔄 Update Phase"):
                 if new_phase != current_phase:
                     result = set_automation_phase(new_phase)
-                    if "error" in result:
+                    if isinstance(result, dict) and "error" in result:
                         st.error(f"Failed to update: {result['error']}")
                     else:
                         st.success(f"Phase updated to {new_phase}")
@@ -167,7 +176,7 @@ def main():
         with col1:
             if st.button("🛑 EMERGENCY STOP", type="primary"):
                 result = emergency_stop()
-                if "error" in result:
+                if isinstance(result, dict) and "error" in result:
                     st.error(f"Failed: {result['error']}")
                 else:
                     st.success("Emergency stop activated!")
@@ -176,7 +185,7 @@ def main():
         with col2:
             if st.button("🔄 Reset Stop"):
                 result = reset_emergency()
-                if "error" in result:
+                if isinstance(result, dict) and "error" in result:
                     st.error(f"Failed: {result['error']}")
                 else:
                     st.success("Emergency stop reset!")
@@ -251,8 +260,9 @@ def main():
     # Get comprehensive status
     status = get_bot_status()
     
-    if "error" in status:
-        st.error(f"❌ Cannot connect to bot: {status['error']}")
+    if not isinstance(status, dict) or "error" in status:
+        error_msg = status.get("error", "Unknown error") if isinstance(status, dict) else str(status)
+        st.error(f"❌ Cannot connect to bot: {error_msg}")
         st.info("Make sure your bot is running on Railway and the URL is correct.")
         return
     
